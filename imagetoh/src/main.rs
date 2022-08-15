@@ -16,7 +16,7 @@ fn main() {
     let args = env::args().collect::<Vec<String>>();
     let output = args.get(1).expect("output file must be provided as arg");
 
-    let mut byte_sets = ByteSet::new();
+    let mut byte_sets = Vec::new();
     for file in glob(IMAGE_PATH)
         .expect("failed to find input files")
         .take(30)
@@ -30,9 +30,12 @@ fn main() {
     fs::write(output, header).unwrap();
 }
 
-fn generate_header(byte_sets: ByteSet) -> String {
+// TODO: compress runs of zeroes
+// TODO: reduce width/height to minimum possible
+fn generate_header(byte_sets: Vec<Bytes>) -> String {
     let bytes = byte_sets
         .into_iter()
+        .flatten()
         // .map(|x| format!("{x:#010b}"))
         .map(|x| format!("{x:#04x}"))
         .chunks(16)
@@ -71,17 +74,6 @@ fn generate_header(byte_sets: ByteSet) -> String {
 ///     display.display();
 ///
 struct Bytes(Vec<u8>);
-
-/// A ByteSet contains a variable number of Bytes of variable length.
-/// They are laid out in memory as follows:
-///
-///     const uint8_t frames[] = {
-///       /* w: u8 */ 60, /* h: u8 */ 64,
-///       /* bytes: u8[] */ 0b01100011,
-///       // (repeat 0 or more times)...
-///     };
-///
-struct ByteSet(Vec<Bytes>);
 
 impl Bytes {
     fn try_from_image<P>(path: P) -> Result<Self, String>
@@ -133,6 +125,22 @@ impl Bytes {
 
         Ok(Self(inner))
     }
+
+    /// Return an iterator over bits (pixels) contained in the bytes.
+    /// Row padding is included, so the iterator will always output
+    /// a multiple of 8 values.
+    fn bits(&self) -> impl Iterator<Item = u8> {
+        let mut bits = Vec::with_capacity((self.0.len() - 2) * 8);
+
+        // skip the width and height
+        for byte in self.0.iter().skip(2) {
+            for bit_index in 0..8 {
+                bits.push(if byte & (1 << bit_index) > 0 { 1 } else { 0 });
+            }
+        }
+
+        bits.into_iter()
+    }
 }
 
 impl std::iter::IntoIterator for Bytes {
@@ -140,25 +148,78 @@ impl std::iter::IntoIterator for Bytes {
     type IntoIter = <Vec<u8> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
+        // Sadly, smaller Arduino boards are too memory-constrained to
+        // decompress images into SRAM at runtime, so any sufficiently-
+        // complex (read: larger than 24x24 or so) images must be stored
+        // in flash memory at program burn time.
+        return self.0.into_iter();
 
-impl ByteSet {
-    fn new() -> Self {
-        Self(Vec::new())
-    }
+        let uncompressed_size = self.0.len();
 
-    fn push(&mut self, bytes: Bytes) {
-        self.0.push(bytes);
-    }
-}
+        let mut bytes = vec![self.0[0], self.0[1]];
+        if self.0.len() == 2 {
+            // length is 0u32 (read more below)
+            bytes.extend(vec![0, 0, 0, 0]);
+            let compressed_size = bytes.len();
+            eprintln!("uncompressed: {uncompressed_size} bytes");
+            eprintln!("compressed: {compressed_size} bytes");
+            eprintln!(
+                "size reduction: {}%",
+                (uncompressed_size - compressed_size) as f32 / uncompressed_size as f32 * 100.0
+            );
+            return bytes.into_iter();
+        }
 
-impl std::iter::IntoIterator for ByteSet {
-    type Item = u8;
-    type IntoIter = std::iter::Flatten<<Vec<Bytes> as IntoIterator>::IntoIter>;
+        // We're going to use run-length encoding to compress consecutive
+        // pixels of the same value; run length will be stored in the low
+        // 7 bits of the byte, and the high bit will determine the value;
+        // since 0-length runs can't exist, the low 7 bits represent the
+        // values [1, 128] (to calculate, add 1 to their normal value)
+        //
+        //     1 0 0 0 1 0 0 1
+        //     | |-|-|-|-|-|-|- 9 in binary, so length is 10
+        //     |- run of 1s
+        //
+        // There may be a more efficient option where runs always alternate,
+        // which would allow us to use the high bit and thus store runs up
+        // to 256 per byte. However, this would require some sort of special
+        // marker value for runs > 256, which isn't required with the above
+        // layout, so we'll put that off for now for the sake of simplicity.
+        let mut runs = Vec::new();
+        let mut bits = self.bits();
+        let mut bit_val = bits.next().unwrap();
+        let mut run_len = 1;
+        let max_len = 128;
+        for bit in bits {
+            if bit == bit_val {
+                run_len += 1;
+                if run_len == max_len {
+                    runs.push((bit_val << 7) | (run_len - 1));
+                    run_len = 0;
+                }
+            } else {
+                runs.push((bit_val << 7) | (run_len - 1));
+                bit_val = bit;
+                run_len = 1;
+            }
+        }
 
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter().flatten()
+        // Since the number of bytes will no longer be directly related to
+        // the image dimensions, we need to output the actual length. This
+        // is stored as a u32, split over 4 u8 values.
+        let len = runs.len();
+        for byte_index in (0..4).into_iter().rev() {
+            bytes.push((len >> (byte_index * 8) & 0xff) as u8);
+        }
+
+        bytes.extend(runs);
+        let compressed_size = bytes.len();
+        eprintln!("uncompressed: {uncompressed_size} bytes");
+        eprintln!("compressed: {compressed_size} bytes");
+        eprintln!(
+            "size reduction: {}%",
+            (uncompressed_size - compressed_size) as f32 / uncompressed_size as f32 * 100.0
+        );
+        bytes.into_iter()
     }
 }

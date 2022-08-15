@@ -29,18 +29,48 @@ void setup() {
   // display.invertDisplay(true);
 }
 
-int32_t offset = 0;
+uint32_t offset = 0;
 void loop() {
   // display frames
-  // TODO: compress empty pixels to reduce PROGMEM usage and allow storing larger animations
   uint8_t* image_bytes = &image_frames[offset];
   int16_t w = pgm_read_byte(&image_bytes[0]);
   int16_t h = pgm_read_byte(&image_bytes[1]);
+
+  // runtime decompression turns out to be an untenable approach since we
+  // don't reliably have access to enough dynamic memory to compress all
+  // of the raw pixel data (something as small as malloc(512) routinely
+  // fails on memory-constrained boards)
+  /* uint32_t compressed_len = 0; */
+  /* for (int byte_index = 0; byte_index < 4; byte_index++) { */
+  /*   compressed_len |= pgm_read_byte(&image_bytes[2 + byte_index]) << ((3 - byte_index) * 8); */
+  /* } */
+
+  /* uint32_t uncompressed_len = (uint32_t)((w + 7) / 8) * (uint32_t)h; */
+  /* uint8_t* img = (uint8_t*)calloc(uncompressed_len, sizeof(uint8_t)); */
+
+  /* uint32_t byte_index = 0; */
+  /* uint8_t bit_index = 0; */
+  /* for (uint32_t i = 0; i < compressed_len; i++) { */
+  /*   uint8_t run_ = pgm_read_byte(&image_bytes[6 + i]); */
+  /*   uint8_t bit_ = (run_ & (1 << 7)) > 0 ? 1 : 0; */
+  /*   uint8_t len = (run_ & 0b01111111) + 1; */
+
+  /*   for (uint8_t i = 0; i < len; i++) { */
+  /*     if (bit_ == 1) img[byte_index] |= 1 << (7 - bit_index); */
+  /*     bit_index += 1; */
+  /*     if (bit_index == 8) { */
+  /*       bit_index = 0; */
+  /*       byte_index += 1; */
+  /*     } */
+  /*   } */
+  /* } */
+
   displayImage(w, h, (const uint8_t[])&image_bytes[2]);
   delay(30);
+  /* free(img); */
 
-  offset += (int32_t)((w + 7) / 8) * (int32_t)h + 2;
-  if (offset == (sizeof image_frames / sizeof *image_frames)) {
+  offset += (uint32_t)((w + 7) / 8) * (uint32_t)h + 2;
+  if (offset == (sizeof(image_frames) / sizeof(*image_frames))) {
     offset = 0;
   }
 }

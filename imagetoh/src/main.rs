@@ -152,6 +152,25 @@ impl std::iter::IntoIterator for Bytes {
         // decompress images into SRAM at runtime, so any sufficiently-
         // complex (read: larger than 24x24 or so) images must be stored
         // in flash memory at program burn time.
+        //
+        // Honestly, run-length encoding only had modest returns on the
+        // duck GIF images, coming in at around 10% savings per frame.
+        // I think the issue is that the savings from actual runs (large
+        // sections of black pixels) are overshadowed by the added
+        // overhead of run-length encoding more varied areas. Normally,
+        // a segment with a pattern of alternating pixels:
+        //
+        //     0 1 0 1 0 1 0 1
+        //
+        // fits in a single byte, but with run-length encoding:
+        //
+        //     0x00 0x80 0x00 0x80 0x00 0x80 0x00 0x80
+        //
+        // takes up much more space needlessly. If I were to pursue this
+        // method further, I would consider adding two modes, one for
+        // sections that benefit from runs and another for complex
+        // sections, and introduce some sort of marker byte for switching
+        // between the two.
         return self.0.into_iter();
 
         let uncompressed_size = self.0.len();
